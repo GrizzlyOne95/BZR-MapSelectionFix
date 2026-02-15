@@ -1,0 +1,17 @@
+# MSVC artifacts
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Binaries (moved to separate releases)
+# winmm.dll
+# Note: I'll include winmm.dll in the initial commit for the "Release" as requested,
+# but usually it's ignored.
+
+# Generator temps
+dllmain_gen.cpp
+system_winmm_exports.txt
+build_log.txt
+gen_proxy.py # Keep this as it's useful
