@@ -33,7 +33,12 @@ The project uses a **Vectored Exception Handler (VEH)** combined with **INT3 (0x
 #### Advantages for C++ Modding:
 - **Zero-Footprint**: Unlike standard "Detours" which require a 5-byte `JMP` (often overwriting multiple instructions), `INT3` only needs **1 byte**. This makes it safe to hook even the smallest functions.
 - **Stealth**: Many integrity checks look for `JMP` or `CALL` patches. A single `0xCC` is much more subtle and is often ignored as a "debug leftover".
-- **Context-Rich**: You get a snapshot of every register at the exact moment of the hook, which is harder to achieve with simple mid-function detours.
+- **Context-Rich**: You get a snapshot of every register at the exact moment of the hook.
+
+#### Coexistence & Safety:
+The DLL registers its handler at the front of the **Vectored Exception Chain** (`FirstHandler = 1`). 
+- **Ownership**: The handler only returns `CONTINUE_EXECUTION` for exceptions it explicitly owns (matching its RVA list).
+- **Transparency**: For any other exception (e.g., engine crashes, division by zero, or other mods' hooks), it returns `CONTINUE_SEARCH`. This allows the exception to pass through to the game's native error handling or other injected debuggers (like Steam/RivaTuner) without interference.
 
 ### 3. Target Game RVAs (v2.0.188)
 The following RVAs in `battlezone98redux.exe` are the primary targets for the fix:
