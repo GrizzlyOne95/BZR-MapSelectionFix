@@ -46,17 +46,32 @@ namespace MapSelectionFix
                 rva == RVA_ADD_ENTRY || rva == RVA_UI_REFRESH)
             {
                 if (rva == RVA_SET_SELECTED_INDEX) {
-                    // Capture selection logic here
+                    // Capture selection logic
+                    m_pListObject = (void*)ExceptionInfo->ContextRecord->Ecx;
+                    m_savedIndex = *(int*)(ExceptionInfo->ContextRecord->Esp + 4);
                 } else if (rva == RVA_CLEAR_LIST) {
                     m_isRefreshing = true;
                 } else if (rva == RVA_ADD_ENTRY) {
-                    // Filtering logic here:
-                    // If we want to SKIP this function entirely:
-                    // 1. Get return address: DWORD retAddr = *(DWORD*)ExceptionInfo->ContextRecord->Esp;
-                    // 2. Adjust ESP: ExceptionInfo->ContextRecord->Esp += 4; (plus args if stdcall)
-                    // 3. Set EIP: ExceptionInfo->ContextRecord->Eip = retAddr;
-                    // 4. return EXCEPTION_CONTINUE_EXECUTION;
+                    // (Optional) Filtering logic here
                 } else if (rva == RVA_UI_REFRESH) {
+                    if (m_isRefreshing && m_pListObject && m_savedIndex != -1) {
+                        m_isRefreshing = false;
+                        
+                        // Restore selection by calling the game's function
+                        // We must temporarily restore the patch to avoid recursion
+                        typedef void (__thiscall* tSetSelectedIndex)(void*, int);
+                        tSetSelectedIndex fn = (tSetSelectedIndex)(base + RVA_SET_SELECTED_INDEX);
+                        
+                        // Find the patch and temporarily restore it
+                        for (auto& patch : m_patches) {
+                            if (patch.GetAddress() == (base + RVA_SET_SELECTED_INDEX)) {
+                                patch.Restore();
+                                fn(m_pListObject, m_savedIndex);
+                                patch.Reload();
+                                break;
+                            }
+                        }
+                    }
                     m_isRefreshing = false;
                 }
 

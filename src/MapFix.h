@@ -47,6 +47,8 @@ namespace MapSelectionFix
         static inline std::string m_lastSelectedMap;
         static inline std::vector<INT3Patch> m_patches;
         static inline bool m_isRefreshing = false;
+        static inline void* m_pListObject = nullptr;
+        static inline int m_savedIndex = -1;
         
         // Helper to get game base
         static uintptr_t GetGameBase() {
