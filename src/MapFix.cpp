@@ -3,17 +3,23 @@
 
 namespace MapSelectionFix
 {
-    static std::vector<INT3Patch*> m_patches;
-
     void MapFix::Initialize()
     {
         m_handlerCookie = AddVectoredExceptionHandler(1, Handler);
         
         uintptr_t base = GetGameBase();
-        m_patches.push_back(new INT3Patch(base + RVA_SET_SELECTED_INDEX));
-        m_patches.push_back(new INT3Patch(base + RVA_CLEAR_LIST));
-        m_patches.push_back(new INT3Patch(base + RVA_ADD_ENTRY));
-        m_patches.push_back(new INT3Patch(base + RVA_UI_REFRESH));
+        
+        // Use emplace_back to construct right in the vector as requested
+        m_patches.reserve(4);
+        m_patches.emplace_back(base + RVA_SET_SELECTED_INDEX);
+        m_patches.emplace_back(base + RVA_CLEAR_LIST);
+        m_patches.emplace_back(base + RVA_ADD_ENTRY);
+        m_patches.emplace_back(base + RVA_UI_REFRESH);
+
+        // Actually apply the patches
+        for (auto& patch : m_patches) {
+            patch.Reload();
+        }
     }
 
     void MapFix::Shutdown()
@@ -22,66 +28,52 @@ namespace MapSelectionFix
             RemoveVectoredExceptionHandler(m_handlerCookie);
             m_handlerCookie = nullptr;
         }
-        for (auto patch : m_patches) {
-            delete patch;
-        }
-        m_patches.clear();
-    }
 
-    bool MapFix::ShouldFilter(const char* mapName)
-    {
-        if (!mapName) return false;
-        
-        // Example filtering logic based on _bzcp.dll (mimicking its behavior)
-        // In a real scenario, this would check against known problematic maps
-        // or based on selected filter in the UI.
-        std::string name = mapName;
-        if (name.find("Stock") != std::string::npos) return false;
-        if (name.find("Workshop") != std::string::npos) return false;
-        
-        return false; // Default to no filter for now
+        // Vector clear will trigger destructors, which call RestorePatch()
+        m_patches.clear();
     }
 
     LONG WINAPI MapFix::Handler(EXCEPTION_POINTERS* ExceptionInfo)
     {
         if (ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
         {
-            uintptr_t ip = ExceptionInfo->ContextRecord->Eip;
             uintptr_t base = GetGameBase();
+            uintptr_t eip = ExceptionInfo->ContextRecord->Eip;
+            uintptr_t rva = eip - base;
 
-            if (ip == base + RVA_SET_SELECTED_INDEX)
+            if (rva == RVA_SET_SELECTED_INDEX)
             {
-                // Capture current selection index/name
-                // EDX usually contains the index or name pointer in BZR
-                // m_lastSelectedMap = (char*)ExceptionInfo->ContextRecord->Edx;
+                // Capture the map name/index logic here
+                // For now just logging the hit
+                ExceptionInfo->ContextRecord->Eip++; // Skip INT3
+                return EXCEPTION_CONTINUE_EXECUTION;
             }
-            else if (ip == base + RVA_CLEAR_LIST)
+            else if (rva == RVA_CLEAR_LIST)
             {
                 m_isRefreshing = true;
+                ExceptionInfo->ContextRecord->Eip++;
+                return EXCEPTION_CONTINUE_EXECUTION;
             }
-            else if (ip == base + RVA_ADD_ENTRY)
+            else if (rva == RVA_ADD_ENTRY)
             {
-                // Intercept and filter
-                const char* name = (const char*)ExceptionInfo->ContextRecord->Eax;
-                if (ShouldFilter(name)) {
-                    // Skip the addition by jumping over the call
-                    // This requires careful adjustment of EIP and stack
-                    // ExceptionInfo->ContextRecord->Eip += 5; // Skip call
-                    // return EXCEPTION_CONTINUE_EXECUTION;
-                }
+                // Filtering logic here
+                ExceptionInfo->ContextRecord->Eip++;
+                return EXCEPTION_CONTINUE_EXECUTION;
             }
-            else if (ip == base + RVA_UI_REFRESH)
+            else if (rva == RVA_UI_REFRESH)
             {
-                if (m_isRefreshing) {
-                    m_isRefreshing = false;
-                    // Restore selection
-                }
+                m_isRefreshing = false;
+                // Restore selection logic here
+                ExceptionInfo->ContextRecord->Eip++;
+                return EXCEPTION_CONTINUE_EXECUTION;
             }
-
-            // Step over INT3
-            ExceptionInfo->ContextRecord->Eip++; 
-            return EXCEPTION_CONTINUE_EXECUTION;
         }
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    bool MapFix::ShouldFilter(const char* mapName)
+    {
+        // Add filtering logic if needed
+        return false;
     }
 }

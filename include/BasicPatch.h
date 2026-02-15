@@ -86,6 +86,9 @@ namespace ExtraUtilities
 			this->m_oldProtect = p.m_oldProtect;
 			this->dummyProtect = p.dummyProtect;
 			this->m_originalBytes = std::move(p.m_originalBytes);
+
+			// Mark source as inactive so destructor doesn't restore patch
+			p.m_status = Status::INACTIVE;
 		}
 
 		virtual ~BasicPatch()

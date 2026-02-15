@@ -9,6 +9,22 @@
 
 namespace MapSelectionFix
 {
+    class INT3Patch : public ExtraUtilities::BasicPatch
+    {
+    public:
+        INT3Patch(uintptr_t address) : BasicPatch(address, 1, ExtraUtilities::BasicPatch::Status::INACTIVE) {}
+        
+    protected:
+        void DoPatch() override
+        {
+            uint8_t* p_address = reinterpret_cast<uint8_t*>(m_address);
+            VirtualProtect(p_address, 1, PAGE_EXECUTE_READWRITE, &m_oldProtect);
+            *p_address = 0xCC; // INT3
+            VirtualProtect(p_address, 1, m_oldProtect, &dummyProtect);
+            m_status = Status::ACTIVE;
+        }
+    };
+
     class MapFix
     {
     public:
@@ -29,28 +45,13 @@ namespace MapSelectionFix
         static bool ShouldFilter(const char* mapName);
         
         static inline std::string m_lastSelectedMap;
+        static inline std::vector<INT3Patch> m_patches;
         static inline bool m_isRefreshing = false;
         
         // Helper to get game base
         static uintptr_t GetGameBase() {
             static uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandle(NULL));
             return base;
-        }
-    };
-
-    class INT3Patch : public ExtraUtilities::BasicPatch
-    {
-    public:
-        INT3Patch(uintptr_t address) : BasicPatch(address, 1, ExtraUtilities::BasicPatch::Status::ACTIVE) {}
-        
-    protected:
-        void DoPatch() override
-        {
-            uint8_t* p_address = reinterpret_cast<uint8_t*>(m_address);
-            VirtualProtect(p_address, 1, PAGE_EXECUTE_READWRITE, &m_oldProtect);
-            *p_address = 0xCC; // INT3
-            VirtualProtect(p_address, 1, m_oldProtect, &dummyProtect);
-            m_status = Status::ACTIVE;
         }
     };
 }

@@ -8,7 +8,7 @@ if not exist "%VCVARS%" (
 
 call "%VCVARS%" x86
 
-cl /LD /Fe:winmm.dll /Iinclude /Isrc src\dllmain.cpp src\MapFix.cpp src\winmm.def User32.lib /std:c++20 /O2 /MD /EHsc
+cl /LD /Fe:winmm.dll /Iinclude /Isrc src\dllmain.cpp src\MapFix.cpp User32.lib /std:c++20 /O2 /MD /EHsc
 
 if %ERRORLEVEL% NEQ 0 (
     echo Build failed!
