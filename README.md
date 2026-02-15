@@ -67,3 +67,5 @@ The following RVAs in `battlezone98redux.exe` are the primary targets for the fi
 1. Compile using `build.bat`.
 2. Place the resulting `winmm.dll` in the game's root directory.
 3. The fix will automatically initialize when the game loads.
+
+## Thanks to VTrider for his open source work on Extra Utilities. 
