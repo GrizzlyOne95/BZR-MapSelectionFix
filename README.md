@@ -17,16 +17,24 @@ To achieve seamless injection without disrupting the game or its dependencies (S
 - **Ordinal Support**: Includes the critical anonymous export **Ordinal 2** (`#2`), often used by system modules for internal messaging.
 
 ### 2. Hooking Mechanism (VEH + INT3)
-The project uses a **Vectored Exception Handler (VEH)** combined with **INT3 (0xCC)** breakpoints. This approach is preferred over IAT or Inline hooking (Detours) because:
-1. It has zero impact on the code's control flow visibility.
-2. It avoids issues with "hotpatching" or page protection on highly sensitive engine code.
-3. The footprint is a single byte (`0xCC`) per hook.
+The project uses a **Vectored Exception Handler (VEH)** combined with **INT3 (0xCC)** breakpoints. 
 
-#### Handler Logic:
-When an `EXCEPTION_BREAKPOINT` is triggered:
-1. The handler checks the `EIP` against a list of registered RVAs.
-2. If a match is found, it executes the custom logic (e.g., capturing a registers or state).
-3. It increments `EIP` to "skip" the original instruction's first byte (which we replaced with `0xCC`) and returns `EXCEPTION_CONTINUE_EXECUTION`.
+#### How it works:
+1. **The Trap**: We replace the first byte of target instructions in the game's executable memory with the `0xCC` opcode. This is the x86 instruction for a Hardcoded Breakpoint.
+2. **The Exception**: When the CPU hits this byte, it halts execution and triggers a `STATUS_BREAKPOINT` exception.
+3. **The Interception**: Since we registered a Vectored Exception Handler via `AddVectoredExceptionHandler(1, Handler)`, Windows gives our DLL the first opportunity to handle this exception—even before the game's own error handling or a debugger.
+4. **State Access**: Our `Handler` function receives an `EXCEPTION_POINTERS` structure. This contains the full CPU `CONTEXT` (all registers: `EAX`, `EBX`, `ECX`, `EDX`, `ESI`, `EDI`, `EBP`, `ESP`, and `EIP`).
+   - We can inspect registers to see the game's state (e.g., "what map name is in EAX right now?").
+   - We can modify registers to alter the game's flow.
+5. **Safe Resumption**: To let the game continue:
+   - We increment the Instruction Pointer (`EIP`) by 1 to move past the `0xCC` byte.
+   - We return `EXCEPTION_CONTINUE_EXECUTION`.
+   - The CPU resumes execution at the next byte.
+
+#### Advantages for C++ Modding:
+- **Zero-Footprint**: Unlike standard "Detours" which require a 5-byte `JMP` (often overwriting multiple instructions), `INT3` only needs **1 byte**. This makes it safe to hook even the smallest functions.
+- **Stealth**: Many integrity checks look for `JMP` or `CALL` patches. A single `0xCC` is much more subtle and is often ignored as a "debug leftover".
+- **Context-Rich**: You get a snapshot of every register at the exact moment of the hook, which is harder to achieve with simple mid-function detours.
 
 ### 3. Target Game RVAs (v2.0.188)
 The following RVAs in `battlezone98redux.exe` are the primary targets for the fix:
