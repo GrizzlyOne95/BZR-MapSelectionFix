@@ -22,14 +22,13 @@ The project uses a **Vectored Exception Handler (VEH)** combined with **INT3 (0x
 #### How it works:
 1. **The Trap**: We replace the first byte of target instructions in the game's executable memory with the `0xCC` opcode. This is the x86 instruction for a Hardcoded Breakpoint.
 2. **The Exception**: When the CPU hits this byte, it halts execution and triggers a `STATUS_BREAKPOINT` exception.
-3. **The Interception**: Since we registered a Vectored Exception Handler via `AddVectoredExceptionHandler(1, Handler)`, Windows gives our DLL the first opportunity to handle this exception—even before the game's own error handling or a debugger.
-4. **State Access**: Our `Handler` function receives an `EXCEPTION_POINTERS` structure. This contains the full CPU `CONTEXT` (all registers: `EAX`, `EBX`, `ECX`, `EDX`, `ESI`, `EDI`, `EBP`, `ESP`, and `EIP`).
-   - We can inspect registers to see the game's state (e.g., "what map name is in EAX right now?").
-   - We can modify registers to alter the game's flow.
-5. **Safe Resumption**: To let the game continue:
-   - We increment the Instruction Pointer (`EIP`) by 1 to move past the `0xCC` byte.
-   - We return `EXCEPTION_CONTINUE_EXECUTION`.
-   - The CPU resumes execution at the next byte.
+3. **The Interception**: Since we registered a Vectored Exception Handler via `AddVectoredExceptionHandler(1, Handler)`, Windows gives our DLL the first opportunity to handle this exception.
+4. **State Access**: Our `Handler` function receives an `EXCEPTION_POINTERS` structure containing the full CPU `CONTEXT` (all registers: `EAX`, `EBX`, `ECX`, `EDX`, `ESI`, `EDI`, `EBP`, `ESP`, and `EIP`).
+5. **Instruction Resumption (Single-Stepping)**: To let the game continue without crashing, we implement a robust two-stage process:
+   - **Stage 1 (Breakpoint)**: We temporarily restore the original byte at the current `EIP` and set the **Trap Flag (TF)** in `EFlags`.
+   - **Stage 2 (Single Step)**: The CPU executes the original instruction and then immediately triggers a `STATUS_SINGLE_STEP` exception. Our handler intercepts this, re-applies the `0xCC` trap, and continues.
+   - This ensures the hook is permanent but the game code executes correctly every time.
+6. **Filtering / Skipping**: If we want to skip a function call entirely (as seen in the commented-out `AddEntry` logic), we modify `Context->Eip` to the return address and adjust `Context->Esp` to clean up the stack, effectively "jumping back" before the function even starts.
 
 #### Advantages for C++ Modding:
 - **Zero-Footprint**: Unlike standard "Detours" which require a 5-byte `JMP` (often overwriting multiple instructions), `INT3` only needs **1 byte**. This makes it safe to hook even the smallest functions.

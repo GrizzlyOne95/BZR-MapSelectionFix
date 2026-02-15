@@ -91,6 +91,10 @@ namespace ExtraUtilities
 			p.m_status = Status::INACTIVE;
 		}
 
+		void Reload() { DoPatch(); }
+		void Restore() { RestorePatch(); }
+		uintptr_t GetAddress() const { return m_address; }
+
 		virtual ~BasicPatch()
 		{
 			RestorePatch();
@@ -99,22 +103,6 @@ namespace ExtraUtilities
 		bool IsActive()
 		{
 			return m_status == Status::ACTIVE ? true : false;
-		}
-
-		void Reload()
-		{
-			if (m_status == Status::INACTIVE)
-			{
-				DoPatch();
-			}
-		}
-
-		void Unload()
-		{
-			if (m_status == Status::ACTIVE)
-			{
-				RestorePatch();
-			}
 		}
 
 		void SetStatus(Status s)
@@ -126,7 +114,7 @@ namespace ExtraUtilities
 				break;
 
 			case Status::INACTIVE:
-				Unload();
+				Restore();
 				break;
 			}
 		}

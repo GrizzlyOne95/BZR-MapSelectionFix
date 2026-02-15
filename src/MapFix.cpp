@@ -41,32 +41,45 @@ namespace MapSelectionFix
             uintptr_t eip = ExceptionInfo->ContextRecord->Eip;
             uintptr_t rva = eip - base;
 
-            if (rva == RVA_SET_SELECTED_INDEX)
+            // Handle known hooks
+            if (rva == RVA_SET_SELECTED_INDEX || rva == RVA_CLEAR_LIST || 
+                rva == RVA_ADD_ENTRY || rva == RVA_UI_REFRESH)
             {
-                // Capture the map name/index logic here
-                // For now just logging the hit
-                ExceptionInfo->ContextRecord->Eip++; // Skip INT3
-                return EXCEPTION_CONTINUE_EXECUTION;
+                if (rva == RVA_SET_SELECTED_INDEX) {
+                    // Capture selection logic here
+                } else if (rva == RVA_CLEAR_LIST) {
+                    m_isRefreshing = true;
+                } else if (rva == RVA_ADD_ENTRY) {
+                    // Filtering logic here:
+                    // If we want to SKIP this function entirely:
+                    // 1. Get return address: DWORD retAddr = *(DWORD*)ExceptionInfo->ContextRecord->Esp;
+                    // 2. Adjust ESP: ExceptionInfo->ContextRecord->Esp += 4; (plus args if stdcall)
+                    // 3. Set EIP: ExceptionInfo->ContextRecord->Eip = retAddr;
+                    // 4. return EXCEPTION_CONTINUE_EXECUTION;
+                } else if (rva == RVA_UI_REFRESH) {
+                    m_isRefreshing = false;
+                }
+
+                // To resume, we must:
+                // 1. Temporarily restore the original byte
+                // 2. Set the trap flag to single-step
+                // 3. Re-apply the INT3 in the next exception (SINGLE_STEP)
+                for (auto& patch : m_patches) {
+                    if (patch.GetAddress() == eip) {
+                        patch.Restore();
+                        ExceptionInfo->ContextRecord->EFlags |= 0x100; // Set Trap Flag (TF)
+                        return EXCEPTION_CONTINUE_EXECUTION;
+                    }
+                }
             }
-            else if (rva == RVA_CLEAR_LIST)
-            {
-                m_isRefreshing = true;
-                ExceptionInfo->ContextRecord->Eip++;
-                return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        else if (ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP)
+        {
+            // Re-apply all patches that were temporarily restored
+            for (auto& patch : m_patches) {
+                patch.Reload();
             }
-            else if (rva == RVA_ADD_ENTRY)
-            {
-                // Filtering logic here
-                ExceptionInfo->ContextRecord->Eip++;
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-            else if (rva == RVA_UI_REFRESH)
-            {
-                m_isRefreshing = false;
-                // Restore selection logic here
-                ExceptionInfo->ContextRecord->Eip++;
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
+            return EXCEPTION_CONTINUE_EXECUTION;
         }
         return EXCEPTION_CONTINUE_SEARCH;
     }
