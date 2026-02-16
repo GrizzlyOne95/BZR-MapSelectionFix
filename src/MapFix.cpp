@@ -15,6 +15,25 @@ namespace MapSelectionFix
         constexpr uintptr_t kRvaUiDiscovery1 = 0x7680d6;
         constexpr uintptr_t kRvaUiDiscovery2 = 0x76810e;
 
+        // Additional RVAs observed in the closed-source Community Patch helper DLL.
+        // These are discovery probes for manual lobby refresh code paths.
+        constexpr uintptr_t kExtraDiscoveryRvas[] = {
+            0x79b86d, 0x5d4260, 0x799279, 0x79928c,
+            0x7cafa0, 0x7cb412, 0x799116, 0x79916b,
+            0x799377, 0x79937e, 0x7c9de0, 0x89e8c8,
+            0x7cb500, 0x7cb540, 0x7998ab, 0x7998b4
+        };
+
+        bool IsExtraDiscoveryRva(uintptr_t rva)
+        {
+            for (uintptr_t probe : kExtraDiscoveryRvas)
+            {
+                if (rva == probe)
+                    return true;
+            }
+            return false;
+        }
+
         const char* HookNameFromRva(uintptr_t rva)
         {
             if (rva == kRvaSetSelectedIndex) return "SetSelectedIndex";
@@ -24,6 +43,7 @@ namespace MapSelectionFix
             if (rva == kRvaUiRefreshAlt) return "UIRefreshAlt";
             if (rva == kRvaUiDiscovery1) return "UIDiscovery1";
             if (rva == kRvaUiDiscovery2) return "UIDiscovery2";
+            if (IsExtraDiscoveryRva(rva)) return "UIExtraDiscovery";
             return "Unknown";
         }
 
@@ -69,7 +89,8 @@ namespace MapSelectionFix
                     rva == kRvaUiRefresh ||
                     rva == kRvaUiRefreshAlt ||
                     rva == kRvaUiDiscovery1 ||
-                    rva == kRvaUiDiscovery2);
+                    rva == kRvaUiDiscovery2 ||
+                    IsExtraDiscoveryRva(rva));
         }
     }
 
@@ -83,7 +104,7 @@ namespace MapSelectionFix
         Logger::LogFormat("[MapFix] Game base: 0x%p", (void*)base);
         
         // Use emplace_back to construct right in the vector as requested
-        m_patches.reserve(7);
+        m_patches.reserve(7 + _countof(kExtraDiscoveryRvas));
         m_patches.emplace_back(base + RVA_SET_SELECTED_INDEX);
         m_patches.emplace_back(base + RVA_CLEAR_LIST);
         m_patches.emplace_back(base + RVA_ADD_ENTRY);
@@ -91,6 +112,10 @@ namespace MapSelectionFix
         m_patches.emplace_back(base + RVA_UI_REFRESH_ALT);
         m_patches.emplace_back(base + RVA_UI_DISCOVERY_1);
         m_patches.emplace_back(base + RVA_UI_DISCOVERY_2);
+        for (uintptr_t probe : kExtraDiscoveryRvas)
+        {
+            m_patches.emplace_back(base + probe);
+        }
 
         // Actually apply the patches
         for (auto& patch : m_patches) {
@@ -138,7 +163,7 @@ namespace MapSelectionFix
             if (rva == RVA_SET_SELECTED_INDEX || rva == RVA_CLEAR_LIST || 
                 rva == RVA_ADD_ENTRY || rva == RVA_UI_REFRESH ||
                 rva == RVA_UI_REFRESH_ALT || rva == RVA_UI_DISCOVERY_1 ||
-                rva == RVA_UI_DISCOVERY_2)
+                rva == RVA_UI_DISCOVERY_2 || IsExtraDiscoveryRva(rva))
             {
                 ExceptionInfo->ContextRecord->Eip = hit_address;
                 Logger::LogFormat("[MapFix] Breakpoint hit at %s (RVA 0x%X)", HookNameFromRva(rva), (unsigned)rva);
@@ -211,6 +236,18 @@ namespace MapSelectionFix
                 } else {
                     // Discovery probes for manual-refresh code paths.
                     Logger::LogFormat("[MapFix] Discovery probe hit at %s (RVA 0x%X)", HookNameFromRva(rva), (unsigned)rva);
+                    if (ExceptionInfo->ContextRecord->Ecx)
+                    {
+                        int topIndex = -1;
+                        if (SafeReadInt((void*)((uintptr_t)ExceptionInfo->ContextRecord->Ecx + 0x44), &topIndex))
+                        {
+                            Logger::LogFormat("[MapFix] Discovery ECX=0x%p topIndex=%d EAX=0x%p EDX=0x%p",
+                                (void*)ExceptionInfo->ContextRecord->Ecx,
+                                topIndex,
+                                (void*)ExceptionInfo->ContextRecord->Eax,
+                                (void*)ExceptionInfo->ContextRecord->Edx);
+                        }
+                    }
                 }
 
                 // To resume, we must:
