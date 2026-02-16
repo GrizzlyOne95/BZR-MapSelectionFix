@@ -49,6 +49,7 @@ namespace MapSelectionFix
         static inline bool m_isRefreshing = false;
         static inline void* m_pListObject = nullptr;
         static inline int m_savedIndex = -1;
+        static inline int m_savedScrollOffset = -1;
         
         // Helper to get game base
         static uintptr_t GetGameBase() {

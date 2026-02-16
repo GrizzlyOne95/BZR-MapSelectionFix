@@ -23,11 +23,18 @@
 #pragma once
 
 #include <cstdint>
+#include <Windows.h>
 
 #include "Vec3.h"
 
 namespace BZR
 {
+	inline uintptr_t GetGameBase()
+	{
+		static uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandle(NULL));
+		return base;
+	}
+
 	// Typedefs
 	using handle = unsigned int; // internally handles are unsigned ints
 

@@ -1,5 +1,17 @@
+#define WIN32_LEAN_AND_MEAN
+#define _WINSOCKAPI_  // Prevent winsock.h from being included
 #include <Windows.h>
+#include <WinSock2.h>
+#include "Logger.h"
 #include "MapFix.h"
+#include "NetTune.h"
+#include "SocketOptimizer.h"
+
+namespace
+{
+    // A/B toggle: disable constant patching while validating SocketOptimizer-only behavior.
+    constexpr bool kEnableNetTune = false;
+}
 
 // Forwarding all winmm.dll exports to the system version.
 // Using System32 path because for 32-bit processes it's automatically 
@@ -201,8 +213,23 @@
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinstDLL);
+        MapSelectionFix::Logger::Initialize();
+        MapSelectionFix::Logger::Log("[Main] DLL Loading...");
         MapSelectionFix::MapFix::Initialize();
+        if (kEnableNetTune) {
+            MapSelectionFix::NetTune::Initialize();
+            MapSelectionFix::Logger::Log("[Main] NetTune enabled");
+        } else {
+            MapSelectionFix::Logger::Log("[Main] NetTune disabled (SocketOptimizer-only mode)");
+        }
+        MapSelectionFix::SocketOptimizer::Initialize();
+        MapSelectionFix::Logger::Log("[Main] DLL Loaded Successfully");
     } else if (fdwReason == DLL_PROCESS_DETACH) {
+        MapSelectionFix::Logger::Log("[Main] Unloading DLL...");
+        MapSelectionFix::SocketOptimizer::Shutdown();
+        if (kEnableNetTune) {
+            MapSelectionFix::NetTune::Shutdown();
+        }
         MapSelectionFix::MapFix::Shutdown();
     }
     return TRUE;
