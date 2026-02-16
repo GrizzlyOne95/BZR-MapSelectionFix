@@ -4,6 +4,7 @@
 #include <WinSock2.h>
 #include "Logger.h"
 #include "MapFix.h"
+#include "LuaInterop.h"
 #include "NetTune.h"
 #include "SocketOptimizer.h"
 
@@ -216,6 +217,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         MapSelectionFix::Logger::Initialize();
         MapSelectionFix::Logger::Log("[Main] DLL Loading...");
         MapSelectionFix::MapFix::Initialize();
+        MapSelectionFix::LuaInterop::Initialize();
         if (kEnableNetTune) {
             MapSelectionFix::NetTune::Initialize();
             MapSelectionFix::Logger::Log("[Main] NetTune enabled");
@@ -230,6 +232,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         if (kEnableNetTune) {
             MapSelectionFix::NetTune::Shutdown();
         }
+        MapSelectionFix::LuaInterop::Shutdown();
         MapSelectionFix::MapFix::Shutdown();
     }
     return TRUE;
