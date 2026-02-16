@@ -1,8 +1,10 @@
 #include "SocketOptimizer.h"
 #include "Logger.h"
+#include <Ws2tcpip.h>
 #include <iostream>
 #include <cstring>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace MapSelectionFix
 {
@@ -47,6 +49,64 @@ namespace MapSelectionFix
     static bool g_socket_lock_initialized = false;
     static CRITICAL_SECTION g_socket_lock;
     static std::unordered_set<SOCKET> g_optimized_sockets;
+    static std::unordered_map<SOCKET, uint32_t> g_repeat_counts;
+
+    struct SocketMeta
+    {
+        int af = AF_UNSPEC;
+        int type = 0;
+        int protocol = 0;
+    };
+    static std::unordered_map<SOCKET, SocketMeta> g_socket_meta;
+
+    void TrackSocketMeta(SOCKET s, int af, int type, int protocol)
+    {
+        if (!g_socket_lock_initialized || s == INVALID_SOCKET)
+            return;
+
+        EnterCriticalSection(&g_socket_lock);
+        g_socket_meta[s] = SocketMeta{af, type, protocol};
+        LeaveCriticalSection(&g_socket_lock);
+    }
+
+    bool ApplyTransportTuning(SOCKET s)
+    {
+        if (s == INVALID_SOCKET || !g_real_setsockopt)
+            return false;
+
+        SocketMeta meta{};
+        bool have_meta = false;
+
+        if (g_socket_lock_initialized)
+        {
+            EnterCriticalSection(&g_socket_lock);
+            auto it = g_socket_meta.find(s);
+            if (it != g_socket_meta.end())
+            {
+                meta = it->second;
+                have_meta = true;
+            }
+            LeaveCriticalSection(&g_socket_lock);
+        }
+
+        if (!have_meta || meta.type != SOCK_STREAM)
+            return false;
+
+        int value = 1;
+        int res = g_real_setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&value, sizeof(value));
+        if (res == 0)
+            Logger::LogFormat("[SocketOptimizer] Enabled TCP_NODELAY on socket 0x%p", (void*)(uintptr_t)s);
+        else
+            Logger::LogFormat("[SocketOptimizer] TCP_NODELAY failed on socket 0x%p (error: %d)", (void*)(uintptr_t)s, WSAGetLastError());
+
+        res = g_real_setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, (const char*)&value, sizeof(value));
+        if (res == 0)
+            Logger::LogFormat("[SocketOptimizer] Enabled SO_KEEPALIVE on socket 0x%p", (void*)(uintptr_t)s);
+        else
+            Logger::LogFormat("[SocketOptimizer] SO_KEEPALIVE failed on socket 0x%p (error: %d)", (void*)(uintptr_t)s, WSAGetLastError());
+
+        return true;
+    }
 
     // Helper to set socket buffers. Returns true once we attempted to set on this socket.
     bool SetSocketBuffers(SOCKET s)
@@ -152,7 +212,9 @@ namespace MapSelectionFix
             {
                 EnterCriticalSection(&g_socket_lock);
                 g_optimized_sockets.insert(s);
+                g_repeat_counts[s] = 0;
                 LeaveCriticalSection(&g_socket_lock);
+                ApplyTransportTuning(s);
                 Logger::LogFormat("[SocketOptimizer] Socket 0x%p marked optimized", (void*)(uintptr_t)s);
             }
             else if (!optimized)
@@ -162,18 +224,36 @@ namespace MapSelectionFix
         }
         else
         {
-            Logger::LogFormat("[SocketOptimizer] Socket 0x%p already optimized; skipping", (void*)(uintptr_t)s);
+            bool should_log = false;
+            uint32_t count = 0;
+            if (g_socket_lock_initialized)
+            {
+                EnterCriticalSection(&g_socket_lock);
+                count = ++g_repeat_counts[s];
+                should_log = (count <= 3 || (count % 50) == 0);
+                LeaveCriticalSection(&g_socket_lock);
+            }
+            if (should_log)
+                Logger::LogFormat("[SocketOptimizer] Socket 0x%p already optimized; skipping (repeat=%u)", (void*)(uintptr_t)s, count);
         }
     }
 
     // Hooked socket() function
     SOCKET WINAPI Hooked_socket(int af, int type, int protocol)
     {
+        if (!g_real_socket)
+        {
+            Logger::Log("[SocketOptimizer] Hooked_socket called with null real function");
+            WSASetLastError(WSAEFAULT);
+            return INVALID_SOCKET;
+        }
+
         SOCKET s = g_real_socket(af, type, protocol);
         
         if (s != INVALID_SOCKET)
         {
             Logger::LogFormat("[SocketOptimizer] Socket created (AF=%d, TYPE=%d, PROTO=%d)", af, type, protocol);
+            TrackSocketMeta(s, af, type, protocol);
             EnsureSocketBuffers(s);
         }
         else
@@ -187,11 +267,19 @@ namespace MapSelectionFix
     // Hooked WSASocketW() function
     SOCKET WINAPI Hooked_WSASocketW(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags)
     {
+        if (!g_real_WSASocketW)
+        {
+            Logger::Log("[SocketOptimizer] Hooked_WSASocketW called with null real function");
+            WSASetLastError(WSAEFAULT);
+            return INVALID_SOCKET;
+        }
+
         SOCKET s = g_real_WSASocketW(af, type, protocol, lpProtocolInfo, g, dwFlags);
         
         if (s != INVALID_SOCKET)
         {
             Logger::LogFormat("[SocketOptimizer] WSASocketW created socket (AF=%d, TYPE=%d, PROTO=%d)", af, type, protocol);
+            TrackSocketMeta(s, af, type, protocol);
             EnsureSocketBuffers(s);
         }
         else
@@ -212,6 +300,12 @@ namespace MapSelectionFix
         LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
     )
     {
+        if (!g_real_WSASend)
+        {
+            Logger::Log("[SocketOptimizer] WSASend hook called but real function is null");
+            WSASetLastError(WSAEFAULT);
+            return SOCKET_ERROR;
+        }
         EnsureSocketBuffers(s);
         return g_real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
     }
@@ -226,6 +320,12 @@ namespace MapSelectionFix
         LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
     )
     {
+        if (!g_real_WSARecv)
+        {
+            Logger::Log("[SocketOptimizer] WSARecv hook called but real function is null");
+            WSASetLastError(WSAEFAULT);
+            return SOCKET_ERROR;
+        }
         EnsureSocketBuffers(s);
         return g_real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
     }
@@ -242,6 +342,12 @@ namespace MapSelectionFix
         LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
     )
     {
+        if (!g_real_WSASendTo)
+        {
+            Logger::Log("[SocketOptimizer] WSASendTo hook called but real function is null");
+            WSASetLastError(WSAEFAULT);
+            return SOCKET_ERROR;
+        }
         EnsureSocketBuffers(s);
         return g_real_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iToLen, lpOverlapped, lpCompletionRoutine);
     }
@@ -258,6 +364,12 @@ namespace MapSelectionFix
         LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
     )
     {
+        if (!g_real_WSARecvFrom)
+        {
+            Logger::Log("[SocketOptimizer] WSARecvFrom hook called but real function is null");
+            WSASetLastError(WSAEFAULT);
+            return SOCKET_ERROR;
+        }
         EnsureSocketBuffers(s);
         return g_real_WSARecvFrom(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpFrom, lpFromlen, lpOverlapped, lpCompletionRoutine);
     }
@@ -268,6 +380,8 @@ namespace MapSelectionFix
         {
             EnterCriticalSection(&g_socket_lock);
             size_t erased = g_optimized_sockets.erase(s);
+            g_repeat_counts.erase(s);
+            g_socket_meta.erase(s);
             LeaveCriticalSection(&g_socket_lock);
             if (erased > 0)
                 Logger::LogFormat("[SocketOptimizer] Removed socket 0x%p from optimized set on close", (void*)(uintptr_t)s);
@@ -636,6 +750,8 @@ namespace MapSelectionFix
             {
                 EnterCriticalSection(&g_socket_lock);
                 g_optimized_sockets.clear();
+                g_repeat_counts.clear();
+                g_socket_meta.clear();
                 LeaveCriticalSection(&g_socket_lock);
                 DeleteCriticalSection(&g_socket_lock);
                 g_socket_lock_initialized = false;

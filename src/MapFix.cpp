@@ -1,6 +1,7 @@
 #include "MapFix.h"
 #include "Logger.h"
 #include <iostream>
+#include <algorithm>
 
 namespace MapSelectionFix
 {
@@ -18,6 +19,38 @@ namespace MapSelectionFix
             if (rva == kRvaAddEntry) return "AddEntry";
             if (rva == kRvaUiRefresh) return "UIRefresh";
             return "Unknown";
+        }
+
+        bool SafeReadInt(const void* address, int* out)
+        {
+            if (!address || !out)
+                return false;
+
+            __try
+            {
+                *out = *(const int*)address;
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        bool SafeWriteInt(void* address, int value)
+        {
+            if (!address)
+                return false;
+
+            __try
+            {
+                *(int*)address = value;
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
         }
     }
 
@@ -77,26 +110,37 @@ namespace MapSelectionFix
                     // Capture selection logic
                     m_pListObject = (void*)ExceptionInfo->ContextRecord->Ecx;
                     m_savedIndex = *(int*)(ExceptionInfo->ContextRecord->Esp + 4);
+                    m_hasSelectionSnapshot = (m_savedIndex >= 0);
                     
                     // Capture scroll offset (topIndex is at +0x44 in BZR ListBox)
                     if (m_pListObject) {
-                        m_savedScrollOffset = *(int*)((uintptr_t)m_pListObject + 0x44);
+                        int topIndex = -1;
+                        if (SafeReadInt((void*)((uintptr_t)m_pListObject + 0x44), &topIndex))
+                            m_savedScrollOffset = topIndex;
                     }
                     Logger::LogFormat("[MapFix] Captured selection: list=0x%p index=%d topIndex=%d", m_pListObject, m_savedIndex, m_savedScrollOffset);
                 } else if (rva == RVA_CLEAR_LIST) {
                     // Also capture scroll offset here in case it changed without re-selection
                     if (ExceptionInfo->ContextRecord->Ecx) {
                         m_pListObject = (void*)ExceptionInfo->ContextRecord->Ecx;
-                        m_savedScrollOffset = *(int*)((uintptr_t)m_pListObject + 0x44);
+                        int topIndex = -1;
+                        if (SafeReadInt((void*)((uintptr_t)m_pListObject + 0x44), &topIndex))
+                            m_savedScrollOffset = topIndex;
                     }
                     m_isRefreshing = true;
+                    m_pendingEntryCount = 0;
                     Logger::LogFormat("[MapFix] Refresh start: list=0x%p topIndex=%d", m_pListObject, m_savedScrollOffset);
                 } else if (rva == RVA_ADD_ENTRY) {
-                    // (Optional) Filtering logic here
-                    Logger::Log("[MapFix] AddEntry hit during refresh");
+                    if (m_isRefreshing)
+                        ++m_pendingEntryCount;
+                    Logger::LogFormat("[MapFix] AddEntry hit during refresh (count=%d)", m_pendingEntryCount);
                 } else if (rva == RVA_UI_REFRESH) {
-                    if (m_isRefreshing && m_pListObject && m_savedIndex != -1) {
+                    if (m_isRefreshing && m_pListObject && m_hasSelectionSnapshot && m_savedIndex >= 0) {
                         m_isRefreshing = false;
+
+                        const int maxIndex = (m_pendingEntryCount > 0) ? (m_pendingEntryCount - 1) : m_savedIndex;
+                        const int restoreIndex = std::clamp(m_savedIndex, 0, maxIndex);
+                        const int restoreTopIndex = (m_savedScrollOffset < 0) ? 0 : m_savedScrollOffset;
                         
                         // Restore selection by calling the game's function
                         // We must temporarily restore the patch to avoid recursion
@@ -107,22 +151,25 @@ namespace MapSelectionFix
                         for (auto& patch : m_patches) {
                             if (patch.GetAddress() == (base + RVA_SET_SELECTED_INDEX)) {
                                 patch.Restore();
-                                fn(m_pListObject, m_savedIndex);
+                                fn(m_pListObject, restoreIndex);
                                 patch.Reload();
-                                Logger::LogFormat("[MapFix] Restored selection index=%d via SetSelectedIndex", m_savedIndex);
+                                Logger::LogFormat("[MapFix] Restored selection index=%d (saved=%d, entries=%d)", restoreIndex, m_savedIndex, m_pendingEntryCount);
                                 break;
                             }
                         }
 
                         // Restore scroll offset
                         if (m_savedScrollOffset != -1) {
-                            *(int*)((uintptr_t)m_pListObject + 0x44) = m_savedScrollOffset;
-                            Logger::LogFormat("[MapFix] Restored scroll offset topIndex=%d", m_savedScrollOffset);
+                            if (SafeWriteInt((void*)((uintptr_t)m_pListObject + 0x44), restoreTopIndex))
+                                Logger::LogFormat("[MapFix] Restored scroll offset topIndex=%d", restoreTopIndex);
+                            else
+                                Logger::Log("[MapFix] Failed to restore scroll offset safely (pointer invalid)");
                         }
                     } else {
                         Logger::Log("[MapFix] UIRefresh hit without saved state (nothing to restore)");
                     }
                     m_isRefreshing = false;
+                    m_pendingEntryCount = 0;
                 }
 
                 // To resume, we must:
