@@ -52,6 +52,16 @@ namespace MapSelectionFix
                 return false;
             }
         }
+
+        bool IsHookAddress(uintptr_t address)
+        {
+            uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandle(NULL));
+            uintptr_t rva = address - base;
+            return (rva == kRvaSetSelectedIndex ||
+                    rva == kRvaClearList ||
+                    rva == kRvaAddEntry ||
+                    rva == kRvaUiRefresh);
+        }
     }
 
     void MapFix::Initialize()
@@ -98,13 +108,25 @@ namespace MapSelectionFix
         if (ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
         {
             uintptr_t base = GetGameBase();
-            uintptr_t eip = ExceptionInfo->ContextRecord->Eip;
-            uintptr_t rva = eip - base;
+            uintptr_t trap_eip = ExceptionInfo->ContextRecord->Eip;
+            uintptr_t hit_address = trap_eip;
+
+            // INT3 commonly reports EIP at the byte *after* 0xCC.
+            // Normalize to the actual trap address if needed.
+            if (!IsHookAddress(hit_address) && hit_address > 0)
+            {
+                uintptr_t candidate = hit_address - 1;
+                if (IsHookAddress(candidate))
+                    hit_address = candidate;
+            }
+
+            uintptr_t rva = hit_address - base;
 
             // Handle known hooks
             if (rva == RVA_SET_SELECTED_INDEX || rva == RVA_CLEAR_LIST || 
                 rva == RVA_ADD_ENTRY || rva == RVA_UI_REFRESH)
             {
+                ExceptionInfo->ContextRecord->Eip = hit_address;
                 Logger::LogFormat("[MapFix] Breakpoint hit at %s (RVA 0x%X)", HookNameFromRva(rva), (unsigned)rva);
                 if (rva == RVA_SET_SELECTED_INDEX) {
                     // Capture selection logic
@@ -179,7 +201,7 @@ namespace MapSelectionFix
                 // 2. Set the trap flag to single-step
                 // 3. Re-apply the INT3 in the next exception (SINGLE_STEP)
                 for (auto& patch : m_patches) {
-                    if (patch.GetAddress() == eip) {
+                    if (patch.GetAddress() == hit_address) {
                         patch.Restore();
                         ExceptionInfo->ContextRecord->EFlags |= 0x100; // Set Trap Flag (TF)
                         Logger::LogFormat("[MapFix] Single-step armed for %s", HookNameFromRva(rva));
