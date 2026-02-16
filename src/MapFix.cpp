@@ -11,6 +11,9 @@ namespace MapSelectionFix
         constexpr uintptr_t kRvaClearList = 0x7a31d9;
         constexpr uintptr_t kRvaAddEntry = 0x7a35c0;
         constexpr uintptr_t kRvaUiRefresh = 0x752a82;
+        constexpr uintptr_t kRvaUiRefreshAlt = 0x752d00;
+        constexpr uintptr_t kRvaUiDiscovery1 = 0x7680d6;
+        constexpr uintptr_t kRvaUiDiscovery2 = 0x76810e;
 
         const char* HookNameFromRva(uintptr_t rva)
         {
@@ -18,6 +21,9 @@ namespace MapSelectionFix
             if (rva == kRvaClearList) return "ClearList";
             if (rva == kRvaAddEntry) return "AddEntry";
             if (rva == kRvaUiRefresh) return "UIRefresh";
+            if (rva == kRvaUiRefreshAlt) return "UIRefreshAlt";
+            if (rva == kRvaUiDiscovery1) return "UIDiscovery1";
+            if (rva == kRvaUiDiscovery2) return "UIDiscovery2";
             return "Unknown";
         }
 
@@ -60,7 +66,10 @@ namespace MapSelectionFix
             return (rva == kRvaSetSelectedIndex ||
                     rva == kRvaClearList ||
                     rva == kRvaAddEntry ||
-                    rva == kRvaUiRefresh);
+                    rva == kRvaUiRefresh ||
+                    rva == kRvaUiRefreshAlt ||
+                    rva == kRvaUiDiscovery1 ||
+                    rva == kRvaUiDiscovery2);
         }
     }
 
@@ -74,11 +83,14 @@ namespace MapSelectionFix
         Logger::LogFormat("[MapFix] Game base: 0x%p", (void*)base);
         
         // Use emplace_back to construct right in the vector as requested
-        m_patches.reserve(4);
+        m_patches.reserve(7);
         m_patches.emplace_back(base + RVA_SET_SELECTED_INDEX);
         m_patches.emplace_back(base + RVA_CLEAR_LIST);
         m_patches.emplace_back(base + RVA_ADD_ENTRY);
         m_patches.emplace_back(base + RVA_UI_REFRESH);
+        m_patches.emplace_back(base + RVA_UI_REFRESH_ALT);
+        m_patches.emplace_back(base + RVA_UI_DISCOVERY_1);
+        m_patches.emplace_back(base + RVA_UI_DISCOVERY_2);
 
         // Actually apply the patches
         for (auto& patch : m_patches) {
@@ -124,7 +136,9 @@ namespace MapSelectionFix
 
             // Handle known hooks
             if (rva == RVA_SET_SELECTED_INDEX || rva == RVA_CLEAR_LIST || 
-                rva == RVA_ADD_ENTRY || rva == RVA_UI_REFRESH)
+                rva == RVA_ADD_ENTRY || rva == RVA_UI_REFRESH ||
+                rva == RVA_UI_REFRESH_ALT || rva == RVA_UI_DISCOVERY_1 ||
+                rva == RVA_UI_DISCOVERY_2)
             {
                 ExceptionInfo->ContextRecord->Eip = hit_address;
                 Logger::LogFormat("[MapFix] Breakpoint hit at %s (RVA 0x%X)", HookNameFromRva(rva), (unsigned)rva);
@@ -156,7 +170,7 @@ namespace MapSelectionFix
                     if (m_isRefreshing)
                         ++m_pendingEntryCount;
                     Logger::LogFormat("[MapFix] AddEntry hit during refresh (count=%d)", m_pendingEntryCount);
-                } else if (rva == RVA_UI_REFRESH) {
+                } else if (rva == RVA_UI_REFRESH || rva == RVA_UI_REFRESH_ALT) {
                     if (m_isRefreshing && m_pListObject) {
                         m_isRefreshing = false;
 
@@ -194,6 +208,9 @@ namespace MapSelectionFix
                     }
                     m_isRefreshing = false;
                     m_pendingEntryCount = 0;
+                } else {
+                    // Discovery probes for manual-refresh code paths.
+                    Logger::LogFormat("[MapFix] Discovery probe hit at %s (RVA 0x%X)", HookNameFromRva(rva), (unsigned)rva);
                 }
 
                 // To resume, we must:

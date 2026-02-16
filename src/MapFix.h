@@ -41,6 +41,9 @@ namespace MapSelectionFix
         static constexpr uintptr_t RVA_CLEAR_LIST         = 0x7a31d9;
         static constexpr uintptr_t RVA_ADD_ENTRY          = 0x7a35c0;
         static constexpr uintptr_t RVA_UI_REFRESH         = 0x752a82;
+        static constexpr uintptr_t RVA_UI_REFRESH_ALT     = 0x752d00; // Seen in Community Patch binary
+        static constexpr uintptr_t RVA_UI_DISCOVERY_1     = 0x7680d6; // Discovery-only probes
+        static constexpr uintptr_t RVA_UI_DISCOVERY_2     = 0x76810e; // Discovery-only probes
 
         static bool ShouldFilter(const char* mapName);
         
