@@ -135,31 +135,33 @@ namespace MapSelectionFix
                         ++m_pendingEntryCount;
                     Logger::LogFormat("[MapFix] AddEntry hit during refresh (count=%d)", m_pendingEntryCount);
                 } else if (rva == RVA_UI_REFRESH) {
-                    if (m_isRefreshing && m_pListObject && m_hasSelectionSnapshot && m_savedIndex >= 0) {
+                    if (m_isRefreshing && m_pListObject) {
                         m_isRefreshing = false;
 
-                        const int maxIndex = (m_pendingEntryCount > 0) ? (m_pendingEntryCount - 1) : m_savedIndex;
-                        const int restoreIndex = std::clamp(m_savedIndex, 0, maxIndex);
-                        const int restoreTopIndex = (m_savedScrollOffset < 0) ? 0 : m_savedScrollOffset;
-                        
-                        // Restore selection by calling the game's function
-                        // We must temporarily restore the patch to avoid recursion
-                        typedef void (__thiscall* tSetSelectedIndex)(void*, int);
-                        tSetSelectedIndex fn = (tSetSelectedIndex)(base + RVA_SET_SELECTED_INDEX);
-                        
-                        // Find the patch and temporarily restore it
-                        for (auto& patch : m_patches) {
-                            if (patch.GetAddress() == (base + RVA_SET_SELECTED_INDEX)) {
-                                patch.Restore();
-                                fn(m_pListObject, restoreIndex);
-                                patch.Reload();
-                                Logger::LogFormat("[MapFix] Restored selection index=%d (saved=%d, entries=%d)", restoreIndex, m_savedIndex, m_pendingEntryCount);
-                                break;
+                        // Restore selection if we have a valid snapshot.
+                        if (m_hasSelectionSnapshot && m_savedIndex >= 0) {
+                            const int maxIndex = (m_pendingEntryCount > 0) ? (m_pendingEntryCount - 1) : m_savedIndex;
+                            const int restoreIndex = std::clamp(m_savedIndex, 0, maxIndex);
+
+                            typedef void (__thiscall* tSetSelectedIndex)(void*, int);
+                            tSetSelectedIndex fn = (tSetSelectedIndex)(base + RVA_SET_SELECTED_INDEX);
+
+                            for (auto& patch : m_patches) {
+                                if (patch.GetAddress() == (base + RVA_SET_SELECTED_INDEX)) {
+                                    patch.Restore();
+                                    fn(m_pListObject, restoreIndex);
+                                    patch.Reload();
+                                    Logger::LogFormat("[MapFix] Restored selection index=%d (saved=%d, entries=%d)", restoreIndex, m_savedIndex, m_pendingEntryCount);
+                                    break;
+                                }
                             }
+                        } else {
+                            Logger::Log("[MapFix] No selection snapshot available during UIRefresh; restoring scroll only");
                         }
 
-                        // Restore scroll offset
+                        // Always attempt to restore scroll even when selection snapshot is missing.
                         if (m_savedScrollOffset != -1) {
+                            const int restoreTopIndex = (m_savedScrollOffset < 0) ? 0 : m_savedScrollOffset;
                             if (SafeWriteInt((void*)((uintptr_t)m_pListObject + 0x44), restoreTopIndex))
                                 Logger::LogFormat("[MapFix] Restored scroll offset topIndex=%d", restoreTopIndex);
                             else
