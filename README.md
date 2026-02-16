@@ -1,6 +1,8 @@
 # BZR Map Selection Fix
 
-A standalone `winmm.dll` proxy for Battlezone 98 Redux (v2.0.188+) that implements the "Map Selection Preservation Fix". This project provides an open-source alternative to the legacy fixes, ensuring selected maps in the Shell UI remain stable during lobby refreshes.
+A standalone `winmm.dll` proxy for Battlezone 98 Redux (v2.0.188+) that implements:
+- map selection preservation (including scroll position) during lobby/map list refreshes
+- socket buffer optimization for multiplayer network stability
 
 ## 🔍 Technical Deep Dive
 
@@ -40,15 +42,59 @@ The DLL registers its handler at the front of the **Vectored Exception Chain** (
 - **Ownership**: The handler only returns `CONTINUE_EXECUTION` for exceptions it explicitly owns (matching its RVA list).
 - **Transparency**: For any other exception (e.g., engine crashes, division by zero, or other mods' hooks), it returns `CONTINUE_SEARCH`. This allows the exception to pass through to the game's native error handling or other injected debuggers (like Steam/RivaTuner) without interference.
 
-### 3. Target Game RVAs (v2.0.188)
-The following RVAs in `battlezone98redux.exe` are the primary targets for the fix:
+### 3. Map Jump/Scroll Fix Targets (v2.0.188)
+The following RVAs in `battlezone98redux.exe` are the primary targets for map list preservation:
 
 | RVA | Name | Description |
 |---|---|---|
 | `0x752834` | `SetSelectedMapIndex` | Triggered when a map is selected in the UI. We use this to capture the current selection. |
 | `0x7a31d9` | `ClearList` | Triggered when the lobby or map list is being wiped for a refresh. |
 | `0x7a35c0` | `AddEntry` | The internal call that adds a map to the UI list. Intercepted for filtering. |
-| `0x752a82` | `UIRefresh` | Callback triggered when the UI repopulation is complete. Used to restore the captured selection. |
+| `0x752a82` | `UIRefresh` | Callback triggered when UI repopulation is complete. Used to restore selection + scroll offset. |
+
+### 4. Map Preservation Behavior
+The map fix preserves two pieces of state:
+- `selected index` (the highlighted map entry)
+- `topIndex` (scroll position in the list box)
+
+Flow:
+1. `SetSelectedMapIndex`: capture selected index and list pointer.
+2. `ClearList`: mark refresh in progress and capture latest topIndex.
+3. `UIRefresh`: restore selected index via game function, then restore topIndex.
+
+Result: the list should not "jump" and should keep your scroll location, not just the clicked map.
+
+### 5. Network Optimization (Socket Layer)
+`SocketOptimizer` patches the game IAT for winsock imports and applies socket buffer tuning on first socket use.
+
+Hooked winsock APIs (when present in IAT):
+- `WSASocketW`
+- `WSASend`
+- `WSARecv`
+- `WSASendTo`
+- `WSARecvFrom`
+- `closesocket`
+
+Behavior:
+- first use of a socket: sets `SO_SNDBUF` and `SO_RCVBUF` to `0x100000` (1 MB)
+- readback verification with `getsockopt`
+- deduplicates by socket handle
+- evicts handle from cache on `closesocket` to avoid stale-handle reuse issues
+
+### 6. NetTune vs SocketOptimizer
+This project currently supports two ways to influence buffers:
+- `NetTune` static code-constant patching
+- `SocketOptimizer` runtime winsock hook path
+
+For clean A/B testing, `dllmain.cpp` includes:
+- `kEnableNetTune = false` (SocketOptimizer-only mode by default)
+
+This avoids redundant tuning paths while validating runtime behavior.
+
+### 7. `net.ini` Interaction
+`net.ini` controls game-level bandwidth/kick heuristics (for example `MinBandwidth`, `MaxBandwidth`, `AutoKick*`), while `SocketOptimizer` controls kernel socket buffer sizes.
+
+These are complementary, not mutually exclusive.
 
 ## 🛠️ Build & Architecture
 
@@ -59,9 +105,40 @@ The following RVAs in `battlezone98redux.exe` are the primary targets for the fi
 
 ### Project Structure:
 - `src/dllmain.cpp`: Generated file containing all 193 forwarding pragmas and `DllMain`.
-- `src/MapFix.cpp`: Core VEH handler and state-preservation logic.
+- `src/MapFix.cpp`: Core VEH handler and map selection/scroll preservation logic.
+- `src/SocketOptimizer.cpp`: Winsock IAT hook + per-socket buffer optimization/readback.
+- `src/NetTune.cpp`: Optional static constant patching for socket buffer immediates.
+- `src/Logger.cpp` + `include/Logger.h`: Diagnostic logging to game folder.
 - `include/`: Minimal subset of the `ExtraUtilities` infrastructure (BasicPatch, Scanner).
 - `gen_proxy.py`: A utility script that parses the system `winmm.dll` and generates the `dllmain.cpp` pragmas.
+
+## 🧪 Runtime Verification
+Primary diagnostic log:
+- `MapSelectionFix_Log.txt` in game root
+
+Game-native log:
+- `BZLogger.txt` in game root
+
+Expected lines for network verification:
+- `Patched X winsock IAT entries`
+- `Set SO_SNDBUF ...`
+- `Set SO_RCVBUF ...`
+- `Readback SO_SNDBUF = ...`
+- `Readback SO_RCVBUF = ...`
+
+Expected lines for map fix verification:
+- `Breakpoint hit at SetSelectedIndex`
+- `Captured selection: ...`
+- `Refresh start: ...`
+- `Restored selection index=...`
+- `Restored scroll offset topIndex=...`
+
+## ✅ 3+ Player Stability Checklist
+1. Confirm network hooks loaded (`Patched X winsock IAT entries`).
+2. Confirm buffer set/readback on sockets used in lobby/gameplay.
+3. Run 3+ player lobby/session for extended period.
+4. Tune `net.ini` (`MaxPing`, `DownCount`, `AutoKick*`, compression) one variable group at a time.
+5. Watch for `closesocket` eviction logs to confirm socket-handle reuse safety.
 
 ## 📂 Installation
 1. Compile using `build.bat`.
