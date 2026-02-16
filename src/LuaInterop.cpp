@@ -14,6 +14,8 @@ namespace MapSelectionFix
         typedef int(__cdecl* lua_gettop_fn)(void* L);
         typedef void(__cdecl* lua_settop_fn)(void* L, int idx);
         typedef void(__cdecl* lua_getglobal_fn)(void* L, const char* name);
+        typedef void(__cdecl* lua_setglobal_fn)(void* L, const char* name);
+        typedef void(__cdecl* lua_pushstring_fn)(void* L, const char* s);
         typedef void(__cdecl* lua_pushnumber_fn)(void* L, double n);
         typedef int(__cdecl* lua_pcall_fn)(void* L, int nargs, int nresults, int errfunc);
         typedef int(__cdecl* lua_type_fn)(void* L, int idx);
@@ -24,6 +26,8 @@ namespace MapSelectionFix
             lua_gettop_fn gettop = nullptr;
             lua_settop_fn settop = nullptr;
             lua_getglobal_fn getglobal = nullptr;
+            lua_setglobal_fn setglobal = nullptr;
+            lua_pushstring_fn pushstring = nullptr;
             lua_pushnumber_fn pushnumber = nullptr;
             lua_pcall_fn pcall = nullptr;
             lua_type_fn type = nullptr;
@@ -35,6 +39,7 @@ namespace MapSelectionFix
         bool g_initialized = false;
         void* g_lua_state = nullptr;
         char g_state_source[64] = {0};
+        bool g_objective_iter_fix_installed = false;
 
         PVOID g_veh_cookie = nullptr;
         uintptr_t g_hook_address = 0;
@@ -44,7 +49,7 @@ namespace MapSelectionFix
 
         void ResolveLuaApi()
         {
-            if (g_lua_api.gettop && g_lua_api.settop && g_lua_api.getglobal && g_lua_api.pushnumber && g_lua_api.pcall && g_lua_api.type)
+            if (g_lua_api.gettop && g_lua_api.settop && g_lua_api.getglobal && g_lua_api.setglobal && g_lua_api.pushstring && g_lua_api.pushnumber && g_lua_api.pcall && g_lua_api.type)
                 return;
 
             const char* kCandidateModules[] = {
@@ -61,11 +66,13 @@ namespace MapSelectionFix
                 g_lua_api.gettop = (lua_gettop_fn)GetProcAddress(exe, "lua_gettop");
                 g_lua_api.settop = (lua_settop_fn)GetProcAddress(exe, "lua_settop");
                 g_lua_api.getglobal = (lua_getglobal_fn)GetProcAddress(exe, "lua_getglobal");
+                g_lua_api.setglobal = (lua_setglobal_fn)GetProcAddress(exe, "lua_setglobal");
+                g_lua_api.pushstring = (lua_pushstring_fn)GetProcAddress(exe, "lua_pushstring");
                 g_lua_api.pushnumber = (lua_pushnumber_fn)GetProcAddress(exe, "lua_pushnumber");
                 g_lua_api.pcall = (lua_pcall_fn)GetProcAddress(exe, "lua_pcall");
                 g_lua_api.type = (lua_type_fn)GetProcAddress(exe, "lua_type");
                 g_lua_api.tostring = (lua_tolstring_fn)GetProcAddress(exe, "lua_tolstring");
-                if (g_lua_api.gettop && g_lua_api.settop && g_lua_api.getglobal && g_lua_api.pushnumber && g_lua_api.pcall && g_lua_api.type)
+                if (g_lua_api.gettop && g_lua_api.settop && g_lua_api.getglobal && g_lua_api.setglobal && g_lua_api.pushstring && g_lua_api.pushnumber && g_lua_api.pcall && g_lua_api.type)
                 {
                     g_lua_api.module = exe;
                     Logger::Log("[LuaInterop] Resolved Lua API exports from game executable");
@@ -82,15 +89,19 @@ namespace MapSelectionFix
                 lua_gettop_fn gettop = (lua_gettop_fn)GetProcAddress(mod, "lua_gettop");
                 lua_settop_fn settop = (lua_settop_fn)GetProcAddress(mod, "lua_settop");
                 lua_getglobal_fn getglobal = (lua_getglobal_fn)GetProcAddress(mod, "lua_getglobal");
+                lua_setglobal_fn setglobal = (lua_setglobal_fn)GetProcAddress(mod, "lua_setglobal");
+                lua_pushstring_fn pushstring = (lua_pushstring_fn)GetProcAddress(mod, "lua_pushstring");
                 lua_pushnumber_fn pushnumber = (lua_pushnumber_fn)GetProcAddress(mod, "lua_pushnumber");
                 lua_pcall_fn pcall = (lua_pcall_fn)GetProcAddress(mod, "lua_pcall");
                 lua_type_fn type = (lua_type_fn)GetProcAddress(mod, "lua_type");
 
-                if (gettop && settop && getglobal && pushnumber && pcall && type)
+                if (gettop && settop && getglobal && setglobal && pushstring && pushnumber && pcall && type)
                 {
                     g_lua_api.gettop = gettop;
                     g_lua_api.settop = settop;
                     g_lua_api.getglobal = getglobal;
+                    g_lua_api.setglobal = setglobal;
+                    g_lua_api.pushstring = pushstring;
                     g_lua_api.pushnumber = pushnumber;
                     g_lua_api.pcall = pcall;
                     g_lua_api.type = type;
@@ -178,6 +189,104 @@ namespace MapSelectionFix
             return true;
         }
 
+        bool EvalLuaChunk(const char* code)
+        {
+            if (!g_lua_state || !code)
+                return false;
+
+            if (!g_lua_api.gettop || !g_lua_api.settop || !g_lua_api.getglobal || !g_lua_api.pushstring || !g_lua_api.pcall || !g_lua_api.type)
+                return false;
+
+            int top = g_lua_api.gettop(g_lua_state);
+
+            // loadstring(code) -> function
+            g_lua_api.getglobal(g_lua_state, "loadstring");
+            if (g_lua_api.type(g_lua_state, -1) != LUA_TFUNCTION)
+            {
+                g_lua_api.settop(g_lua_state, top);
+                Logger::Log("[LuaInterop] loadstring not available; cannot install ObjectiveObjects fix");
+                return false;
+            }
+
+            g_lua_api.pushstring(g_lua_state, code);
+            int status = g_lua_api.pcall(g_lua_state, 1, 1, 0);
+            if (status != 0)
+            {
+                if (g_lua_api.tostring)
+                {
+                    size_t len = 0;
+                    const char* err = g_lua_api.tostring(g_lua_state, -1, &len);
+                    if (err)
+                        Logger::LogFormat("[LuaInterop] loadstring failed: %.*s", (int)len, err);
+                }
+                g_lua_api.settop(g_lua_state, top);
+                return false;
+            }
+
+            // call compiled chunk
+            if (g_lua_api.type(g_lua_state, -1) != LUA_TFUNCTION)
+            {
+                g_lua_api.settop(g_lua_state, top);
+                Logger::Log("[LuaInterop] loadstring result is not callable");
+                return false;
+            }
+
+            status = g_lua_api.pcall(g_lua_state, 0, 0, 0);
+            if (status != 0)
+            {
+                if (g_lua_api.tostring)
+                {
+                    size_t len = 0;
+                    const char* err = g_lua_api.tostring(g_lua_state, -1, &len);
+                    if (err)
+                        Logger::LogFormat("[LuaInterop] ObjectiveObjects patch chunk failed: %.*s", (int)len, err);
+                }
+                g_lua_api.settop(g_lua_state, top);
+                return false;
+            }
+
+            g_lua_api.settop(g_lua_state, top);
+            return true;
+        }
+
+        void TryInstallObjectiveObjectsFix()
+        {
+            if (g_objective_iter_fix_installed || !g_lua_state)
+                return;
+
+            static const char* kObjectiveObjectsFixScript =
+                "if not _G.__msf_ObjectiveObjectsFix then\n"
+                "  local _all = _G.AllObjects\n"
+                "  local _getname = _G.GetObjectiveName\n"
+                "  local _old = _G.ObjectiveObjects\n"
+                "  if type(_all) == 'function' and type(_getname) == 'function' then\n"
+                "    _G.ObjectiveObjects = function()\n"
+                "      local it = _all()\n"
+                "      if type(it) ~= 'function' then\n"
+                "        if type(_old) == 'function' then return _old() end\n"
+                "        return function() return nil end\n"
+                "      end\n"
+                "      return function()\n"
+                "        while true do\n"
+                "          local h = it()\n"
+                "          if h == nil then return nil end\n"
+                "          local ok, name = pcall(_getname, h)\n"
+                "          if ok and name ~= nil then return h end\n"
+                "        end\n"
+                "      end\n"
+                "    end\n"
+                "    _G.ObjectiveObjectives = _G.ObjectiveObjects\n"
+                "    _G.__msf_ObjectiveObjectsFix = true\n"
+                "  end\n"
+                "end";
+
+            if (EvalLuaChunk(kObjectiveObjectsFixScript))
+            {
+                g_objective_iter_fix_installed = true;
+                Logger::Log("[LuaInterop] Installed ObjectiveObjects iterator compatibility fix");
+            }
+        }
+
         LONG WINAPI Handler(EXCEPTION_POINTERS* exception_info)
         {
             if (!exception_info || !exception_info->ExceptionRecord || !exception_info->ContextRecord)
@@ -195,7 +304,8 @@ namespace MapSelectionFix
                         __try
                         {
                             void* state = *(void**)(esp + 8); // second cdecl argument
-                            TryCaptureState(state, "LuaCheckStatus");
+                            if (TryCaptureState(state, "LuaCheckStatus"))
+                                TryInstallObjectiveObjectsFix();
                         }
                         __except (EXCEPTION_EXECUTE_HANDLER)
                         {
@@ -364,6 +474,7 @@ namespace MapSelectionFix
 
         g_lua_state = nullptr;
         g_state_source[0] = '\0';
+        g_objective_iter_fix_installed = false;
         g_lua_api = LuaApi{};
         g_initialized = false;
     }
