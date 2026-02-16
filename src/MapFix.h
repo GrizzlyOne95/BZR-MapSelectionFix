@@ -48,6 +48,8 @@ namespace MapSelectionFix
         static bool ShouldFilter(const char* mapName);
         
         static inline std::string m_lastSelectedMap;
+        static inline std::vector<std::string> m_liveEntryKeys;
+        static inline std::vector<std::string> m_refreshEntryKeys;
         static inline std::vector<INT3Patch> m_patches;
         static inline bool m_isRefreshing = false;
         static inline bool m_hasSelectionSnapshot = false;

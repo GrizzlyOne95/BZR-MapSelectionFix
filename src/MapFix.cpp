@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <iostream>
 #include <algorithm>
+#include <cctype>
 
 namespace MapSelectionFix
 {
@@ -32,6 +33,18 @@ namespace MapSelectionFix
                     return true;
             }
             return false;
+        }
+
+        bool EqualsIgnoreCase(const std::string& a, const std::string& b)
+        {
+            if (a.size() != b.size())
+                return false;
+            for (size_t i = 0; i < a.size(); ++i)
+            {
+                if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i]))
+                    return false;
+            }
+            return true;
         }
 
         const char* HookNameFromRva(uintptr_t rva)
@@ -77,6 +90,104 @@ namespace MapSelectionFix
             {
                 return false;
             }
+        }
+
+        bool SafeReadCString(const char* address, std::string& out, size_t max_len = 128)
+        {
+            out.clear();
+            if (!address || max_len == 0)
+                return false;
+
+            __try
+            {
+                for (size_t i = 0; i < max_len; ++i)
+                {
+                    char c = address[i];
+                    if (c == '\0')
+                    {
+                        if (!out.empty())
+                            return true;
+                        return false;
+                    }
+                    if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7E)
+                        return false;
+                    out.push_back(c);
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        bool LooksLikeMapKey(const std::string& s)
+        {
+            if (s.length() < 3 || s.length() > 64)
+                return false;
+
+            bool has_alpha = false;
+            for (char c : s)
+            {
+                if (std::isalpha((unsigned char)c))
+                    has_alpha = true;
+                if (!(std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'))
+                    return false;
+            }
+
+            return has_alpha;
+        }
+
+        std::string ExtractCandidateMapKeyFromContext(CONTEXT* ctx)
+        {
+            if (!ctx)
+                return {};
+
+            const uintptr_t candidates[] = {
+                (uintptr_t)ctx->Eax,
+                (uintptr_t)ctx->Ebx,
+                (uintptr_t)ctx->Ecx,
+                (uintptr_t)ctx->Edx,
+                (uintptr_t)ctx->Esi,
+                (uintptr_t)ctx->Edi
+            };
+
+            for (uintptr_t ptr : candidates)
+            {
+                std::string s;
+                if (SafeReadCString((const char*)ptr, s) && LooksLikeMapKey(s))
+                    return s;
+            }
+
+            auto TryReadStackPointer = [](uintptr_t address, uintptr_t* out) -> bool
+            {
+                if (!out)
+                    return false;
+                __try
+                {
+                    *out = *(uintptr_t*)address;
+                    return true;
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    return false;
+                }
+            };
+
+            uintptr_t esp = ctx->Esp;
+            for (int i = 1; i <= 6; ++i)
+            {
+                uintptr_t ptr = 0;
+                if (!TryReadStackPointer(esp + i * 4, &ptr))
+                    continue;
+
+                std::string s;
+                if (SafeReadCString((const char*)ptr, s) && LooksLikeMapKey(s))
+                    return s;
+            }
+
+            return {};
         }
 
         bool IsHookAddress(uintptr_t address)
@@ -172,6 +283,11 @@ namespace MapSelectionFix
                     m_pListObject = (void*)ExceptionInfo->ContextRecord->Ecx;
                     m_savedIndex = *(int*)(ExceptionInfo->ContextRecord->Esp + 4);
                     m_hasSelectionSnapshot = (m_savedIndex >= 0);
+                    if (m_savedIndex >= 0 && m_savedIndex < (int)m_liveEntryKeys.size())
+                    {
+                        m_lastSelectedMap = m_liveEntryKeys[m_savedIndex];
+                        Logger::LogFormat("[MapFix] Bound selected index %d to key '%s'", m_savedIndex, m_lastSelectedMap.c_str());
+                    }
                     
                     // Capture scroll offset (topIndex is at +0x44 in BZR ListBox)
                     if (m_pListObject) {
@@ -190,19 +306,48 @@ namespace MapSelectionFix
                     }
                     m_isRefreshing = true;
                     m_pendingEntryCount = 0;
+                    m_refreshEntryKeys.clear();
                     Logger::LogFormat("[MapFix] Refresh start: list=0x%p topIndex=%d", m_pListObject, m_savedScrollOffset);
                 } else if (rva == RVA_ADD_ENTRY) {
                     if (m_isRefreshing)
                         ++m_pendingEntryCount;
+
+                    std::string key = ExtractCandidateMapKeyFromContext(ExceptionInfo->ContextRecord);
+                    if (!key.empty())
+                    {
+                        if (m_isRefreshing)
+                            m_refreshEntryKeys.push_back(key);
+                        else if (m_liveEntryKeys.size() < 4096)
+                            m_liveEntryKeys.push_back(key);
+                    }
+
                     Logger::LogFormat("[MapFix] AddEntry hit during refresh (count=%d)", m_pendingEntryCount);
                 } else if (rva == RVA_UI_REFRESH || rva == RVA_UI_REFRESH_ALT) {
                     if (m_isRefreshing && m_pListObject) {
                         m_isRefreshing = false;
 
-                        // Restore selection if we have a valid snapshot.
-                        if (m_hasSelectionSnapshot && m_savedIndex >= 0) {
+                        int restoreIndex = -1;
+                        if (!m_lastSelectedMap.empty() && !m_refreshEntryKeys.empty())
+                        {
+                            for (int i = 0; i < (int)m_refreshEntryKeys.size(); ++i)
+                            {
+                                if (EqualsIgnoreCase(m_refreshEntryKeys[i], m_lastSelectedMap))
+                                {
+                                    restoreIndex = i;
+                                    Logger::LogFormat("[MapFix] Matched selected key '%s' to new index %d", m_lastSelectedMap.c_str(), restoreIndex);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (restoreIndex == -1 && m_hasSelectionSnapshot && m_savedIndex >= 0)
+                        {
                             const int maxIndex = (m_pendingEntryCount > 0) ? (m_pendingEntryCount - 1) : m_savedIndex;
-                            const int restoreIndex = std::clamp(m_savedIndex, 0, maxIndex);
+                            restoreIndex = std::clamp(m_savedIndex, 0, maxIndex);
+                        }
+
+                        // Restore selection if we resolved a target index.
+                        if (restoreIndex >= 0) {
 
                             typedef void (__thiscall* tSetSelectedIndex)(void*, int);
                             tSetSelectedIndex fn = (tSetSelectedIndex)(base + RVA_SET_SELECTED_INDEX);
@@ -228,11 +373,19 @@ namespace MapSelectionFix
                             else
                                 Logger::Log("[MapFix] Failed to restore scroll offset safely (pointer invalid)");
                         }
+
+                        if (!m_refreshEntryKeys.empty())
+                        {
+                            m_liveEntryKeys = m_refreshEntryKeys;
+                            if (m_liveEntryKeys.size() > 4096)
+                                m_liveEntryKeys.resize(4096);
+                        }
                     } else {
                         Logger::Log("[MapFix] UIRefresh hit without saved state (nothing to restore)");
                     }
                     m_isRefreshing = false;
                     m_pendingEntryCount = 0;
+                    m_refreshEntryKeys.clear();
                 } else {
                     // Discovery probes for manual-refresh code paths.
                     Logger::LogFormat("[MapFix] Discovery probe hit at %s (RVA 0x%X)", HookNameFromRva(rva), (unsigned)rva);
