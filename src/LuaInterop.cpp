@@ -296,8 +296,13 @@ namespace MapSelectionFix
             if (code == EXCEPTION_BREAKPOINT)
             {
                 uintptr_t eip = exception_info->ContextRecord->Eip;
-                if (g_hook_active && eip == g_hook_address)
+                uintptr_t hit_addr = eip;
+                if (hit_addr > 0 && hit_addr - 1 == g_hook_address)
+                    hit_addr--;
+                    
+                if (g_hook_active && hit_addr == g_hook_address)
                 {
+                    exception_info->ContextRecord->Eip = hit_addr;
                     uintptr_t esp = exception_info->ContextRecord->Esp;
                     if (esp != 0)
                     {
@@ -325,6 +330,7 @@ namespace MapSelectionFix
                 {
                     g_hook_reload_pending = false;
                     InstallHook();
+                    exception_info->ContextRecord->EFlags &= ~0x100; // clear trap flag
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
             }

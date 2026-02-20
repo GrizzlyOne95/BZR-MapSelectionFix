@@ -313,13 +313,11 @@ namespace MapSelectionFix
                         ++m_pendingEntryCount;
 
                     std::string key = ExtractCandidateMapKeyFromContext(ExceptionInfo->ContextRecord);
-                    if (!key.empty())
-                    {
-                        if (m_isRefreshing)
-                            m_refreshEntryKeys.push_back(key);
-                        else if (m_liveEntryKeys.size() < 4096)
-                            m_liveEntryKeys.push_back(key);
-                    }
+                    
+                    if (m_isRefreshing)
+                        m_refreshEntryKeys.push_back(key);
+                    else if (m_liveEntryKeys.size() < 4096)
+                        m_liveEntryKeys.push_back(key);
 
                     Logger::LogFormat("[MapFix] AddEntry hit during refresh (count=%d)", m_pendingEntryCount);
                 } else if (rva == RVA_UI_REFRESH || rva == RVA_UI_REFRESH_ALT) {
@@ -423,6 +421,7 @@ namespace MapSelectionFix
             for (auto& patch : m_patches) {
                 patch.Reload();
             }
+            ExceptionInfo->ContextRecord->EFlags &= ~0x100; // Clear Trap Flag (TF)
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         return EXCEPTION_CONTINUE_SEARCH;
